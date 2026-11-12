@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark light" />
+  <title>quickspend — blåhaj expense tracker</title>
+  <link rel="icon" type="image/png" href="assets/blahaj_forward_facing.png" />
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('quickspend_theme_v1');
+        if (saved === 'light' || saved === 'dark' || saved === 'auto') {
+          document.documentElement.setAttribute('data-theme', saved);
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="ocean-pattern" aria-hidden="true"></div>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <button type="button" id="blahajMascotBtn" class="blahaj-badge" title="boop the blåhaj to spin!" aria-label="Boop Blåhaj mascot">
+          <img
+            id="blahajMascotImg"
+            src="assets/blahaj_forward_facing.png"
+            data-idle="assets/blahaj_forward_facing.png"
+            data-spin="assets/BlahajGoSpin.gif"
+            alt="Blåhaj"
+            class="blahaj-avatar"
+          />
+        </button>
+
+        <div class="brand-text">
+          <div class="brand-title-wrap">
+            <h1>quickspend</h1>
+            <span class="brand-pill">blåhaj edition</span>
+          </div>
+          <svg class="wave-underline" viewBox="0 0 120 8" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M0 4 Q 10 0, 20 4 T 40 4 T 60 4 T 80 4 T 100 4 T 120 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+          <p class="brand-sub">fast ocean-deep spending tracker</p>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <img
+          src="assets/blajaj_normal.png"
+          alt=""
+          aria-hidden="true"
+          class="blahaj-floater"
+        />
+        <div class="topbar-actions" aria-label="Theme, backup, and export">
+          <button type="button" id="themeToggleBtn" class="btn-ghost btn-theme" title="Cycle theme (auto / light / dark)">
+            theme: auto
+          </button>
+          <button type="button" id="backupBtn" class="btn-ghost" title="Download full JSON backup (expenses + custom methods)">
+            Backup
+          </button>
+          <button type="button" id="importBtn" class="btn-ghost" title="Restore or merge from a JSON backup file">
+            Import
+          </button>
+          <button type="button" id="exportCsvBtn" class="btn-ghost" title="Export all expenses as CSV">
+            CSV
+          </button>
+          <input id="importFileInput" type="file" accept=".json,application/json" class="hidden" />
+        </div>
+      </div>
+    </header>
+
+    <!-- Import confirmation banner (appears when user selects a backup file) -->
+    <section id="importBanner" class="import-banner hidden" aria-live="polite">
+      <div class="import-banner-info">
+        <strong id="importBannerTitle">Backup ready to import</strong>
+        <p id="importBannerDetails"></p>
+      </div>
+      <div class="import-banner-actions">
+        <button type="button" id="importMergeBtn" class="btn-secondary">Merge with existing</button>
+        <button type="button" id="importReplaceBtn" class="btn-danger-soft">Replace all data</button>
+        <button type="button" id="importCancelBtn" class="btn-ghost">Cancel</button>
+      </div>
+    </section>
+
+    <!-- Totals: Day, Week, Month -->
+    <section class="summary-grid" aria-label="Spending Totals">
+      <article class="summary-card summary-card-day">
+        <div class="summary-label-row">
+          <span class="summary-label">today</span>
+          <span class="summary-sub" id="dayRangeLabel"></span>
+        </div>
+        <div class="summary-amount" id="dayTotal">₱0.00</div>
+        <div class="summary-meta" id="dayCount">0 expenses</div>
+      </article>
+
+      <article class="summary-card">
+        <div class="summary-label-row">
+          <span class="summary-label">this week</span>
+          <span class="summary-sub" id="weekRangeLabel"></span>
+        </div>
+        <div class="summary-amount" id="weekTotal">₱0.00</div>
+        <div class="summary-meta" id="weekCount">0 expenses</div>
+      </article>
+
+      <article class="summary-card">
+        <div class="summary-label-row">
+          <span class="summary-label">this month</span>
+          <span class="summary-sub" id="monthRangeLabel"></span>
+        </div>
+        <div class="summary-amount" id="monthTotal">₱0.00</div>
+        <div class="summary-meta" id="monthCount">0 expenses</div>
+      </article>
+    </section>
+
+    <!-- Fast Expense Input -->
+    <section class="entry-card" aria-label="Add Expense">
+      <form id="expenseForm" class="entry-form" autocomplete="off">
+        <div class="field field-amount">
+          <div class="label-row">
+            <label for="amountInput">amount</label>
+          </div>
+          <div class="input-prefix-wrap">
+            <span class="input-prefix" aria-hidden="true">₱</span>
+            <input
+              id="amountInput"
+              name="amount"
+              type="number"
+              inputmode="decimal"
+              step="0.01"
+              min="0.01"
+              placeholder="0.00"
+              required
+              autofocus
+            />
+          </div>
+        </div>
+
+        <div class="field field-desc">
+          <div class="label-row">
+            <label for="descInput">spent on</label>
+          </div>
+          <input
+            id="descInput"
+            name="description"
+            type="text"
+            maxlength="120"
+            placeholder="e.g. coffee, lunch, grab, shark plush"
+            list="recentDescriptions"
+            required
+          />
+          <datalist id="recentDescriptions"></datalist>
+        </div>
+
+        <div class="field field-method">
+          <div class="label-row">
+            <label for="methodSelect">payment method</label>
+            <button type="button" id="manageMethodsBtn" class="btn-link hidden">manage</button>
+          </div>
+          <select id="methodSelect" name="method" required></select>
+        </div>
+
+        <div class="field field-date">
+          <div class="label-row">
+            <label for="dateInput">date</label>
+          </div>
+          <input id="dateInput" name="date" type="date" required />
+        </div>
+
+        <div class="field field-submit">
+          <div class="label-row label-row-spacer" aria-hidden="true"></div>
+          <button type="submit" id="submitBtn" class="btn-primary">add</button>
+        </div>
+      </form>
+
+      <!-- Inline custom payment method creator -->
+      <div id="customMethodRow" class="custom-method-row hidden" aria-live="polite">
+        <label for="customMethodInput" class="sr-only">New payment method name</label>
+        <input
+          id="customMethodInput"
+          type="text"
+          maxlength="32"
+          placeholder="new payment method (e.g. Maya, Seabank, Credit Card)"
+        />
+        <div class="custom-method-btns">
+          <button type="button" id="saveCustomMethodBtn" class="btn-secondary">save method</button>
+          <button type="button" id="cancelCustomMethodBtn" class="btn-ghost">cancel</button>
+        </div>
+      </div>
+
+      <!-- Custom methods manager drawer -->
+      <div id="manageMethodsRow" class="manage-methods-row hidden">
+        <span class="manage-label">custom methods:</span>
+        <div id="customMethodsChips" class="method-chips"></div>
+      </div>
+
+      <p id="formError" class="form-error hidden" role="alert"></p>
+    </section>
+
+    <!-- Calendar + Selected Day Ledger -->
+    <main class="workspace-grid">
+      <section class="calendar-card" aria-label="Monthly Expense Calendar">
+        <div class="calendar-header">
+          <div class="calendar-title-group">
+            <h2 id="calendarMonthTitle">Month Year</h2>
+            <span class="calendar-month-sum" id="calendarMonthSum">month total: ₱0.00</span>
+          </div>
+          <div class="calendar-nav">
+            <button type="button" id="prevMonthBtn" class="btn-icon" aria-label="Previous month" title="Previous month">&#8249;</button>
+            <button type="button" id="todayBtn" class="btn-ghost btn-sm">today</button>
+            <button type="button" id="nextMonthBtn" class="btn-icon" aria-label="Next month" title="Next month">&#8250;</button>
+          </div>
+        </div>
+
+        <div class="calendar-weekdays" aria-hidden="true">
+          <span>sun</span>
+          <span>mon</span>
+          <span>tue</span>
+          <span>wed</span>
+          <span>thu</span>
+          <span>fri</span>
+          <span>sat</span>
+        </div>
+
+        <div id="calendarGrid" class="calendar-grid" role="grid" aria-labelledby="calendarMonthTitle"></div>
+      </section>
+
+      <aside class="ledger-card" aria-label="Selected Day Expenses">
+        <div class="ledger-header">
+          <div>
+            <h2 id="selectedDayTitle">today</h2>
+            <p class="ledger-sub" id="selectedDaySubtitle"></p>
+          </div>
+          <div class="ledger-total" id="selectedDayTotal">₱0.00</div>
+        </div>
+
+        <div id="methodBreakdown" class="method-breakdown hidden"></div>
+
+        <ul id="expenseList" class="expense-list"></ul>
+
+        <div id="emptyState" class="empty-state">
+          <img src="assets/BlahajGoSpin.gif" alt="Spinning Blåhaj" class="empty-blahaj" />
+          <p>no expenses swimming here yet.</p>
+          <span class="empty-hint">enter an amount above and press <kbd>Enter</kbd> to log one fast.</span>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Undo / Info Toast -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite">
+    <span id="toastMessage"></span>
+    <button type="button" id="toastUndoBtn" class="btn-toast hidden">Undo</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
