@@ -1046,15 +1046,20 @@ button {
 
 .empty-state {
   text-align: center;
-  padding: 22px 12px 26px;
+  padding: 20px 12px 10px;
   color: var(--text-muted);
 }
 
-.empty-blahaj {
-  width: 68px;
-  height: 68px;
+.ledger-shonk-dock {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 4px;
+}
+
+.ledger-blahaj {
+  width: 64px;
+  height: 64px;
   object-fit: contain;
-  margin-bottom: 6px;
   filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.2));
 }
 
