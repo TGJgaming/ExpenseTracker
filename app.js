@@ -57,6 +57,23 @@
     dateInput: document.getElementById('dateInput'),
     formError: document.getElementById('formError'),
 
+    reimburseToggleBtn: document.getElementById('reimburseToggleBtn'),
+    reimburseOptions: document.getElementById('reimburseOptions'),
+    splitPills: Array.from(document.querySelectorAll('.split-pill')),
+    reimburseCustomWrap: document.getElementById('reimburseCustomWrap'),
+    reimburseCustomInput: document.getElementById('reimburseCustomInput'),
+    reimburseFromInput: document.getElementById('reimburseFromInput'),
+    recentBorrowers: document.getElementById('recentBorrowers'),
+    reimbursePreview: document.getElementById('reimbursePreview'),
+
+    owedSection: document.getElementById('owedSection'),
+    owedToggleBtn: document.getElementById('owedToggleBtn'),
+    owedCountBadge: document.getElementById('owedCountBadge'),
+    owedTotalAmount: document.getElementById('owedTotalAmount'),
+    owedChevron: document.getElementById('owedChevron'),
+    owedDrawer: document.getElementById('owedDrawer'),
+    owedList: document.getElementById('owedList'),
+
     customMethodRow: document.getElementById('customMethodRow'),
     customMethodInput: document.getElementById('customMethodInput'),
     saveCustomMethodBtn: document.getElementById('saveCustomMethodBtn'),
@@ -211,11 +228,26 @@
     previousMethod: DEFAULT_METHODS[0],
     editingId: null,
     pendingImport: null,
+    reimburseEnabled: false,
+    reimburseSplit: 'full',
+    owedDrawerOpen: false,
     themeMode: localStorage.getItem(STORAGE_KEYS.theme) || 'auto',
     quipIndex: 0,
     spinTimer: null,
     toastTimer: null,
   };
+
+  function getNetSpendCents(exp) {
+    const reimb = exp.reimbursement;
+    if (!reimb || reimb.status !== 'paid') return exp.cents;
+    return Math.max(0, exp.cents - reimb.owedCents);
+  }
+
+  function getPendingOwedCents(exp) {
+    const reimb = exp.reimbursement;
+    if (!reimb || reimb.status !== 'pending') return 0;
+    return reimb.owedCents;
+  }
 
   function getResolvedTheme(mode) {
     if (mode === 'light' || mode === 'dark') return mode;
@@ -436,16 +468,17 @@
     let monthItems = 0;
 
     for (const exp of state.expenses) {
+      const netCents = getNetSpendCents(exp);
       if (exp.date === todayKey) {
-        dayCents += exp.cents;
+        dayCents += netCents;
         dayItems += 1;
       }
       if (exp.date >= week.startKey && exp.date <= week.endKey) {
-        weekCents += exp.cents;
+        weekCents += netCents;
         weekItems += 1;
       }
       if (exp.date.startsWith(monthPrefix)) {
-        monthCents += exp.cents;
+        monthCents += netCents;
         monthItems += 1;
       }
     }
@@ -469,10 +502,13 @@
     for (const exp of state.expenses) {
       let bucket = map.get(exp.date);
       if (!bucket) {
-        bucket = { totalCents: 0, items: [] };
+        bucket = { totalCents: 0, pendingCount: 0, items: [] };
         map.set(exp.date, bucket);
       }
-      bucket.totalCents += exp.cents;
+      bucket.totalCents += getNetSpendCents(exp);
+      if (getPendingOwedCents(exp) > 0) {
+        bucket.pendingCount += 1;
+      }
       bucket.items.push(exp);
     }
     return map;
@@ -481,19 +517,42 @@
   function renderRecentDescriptions() {
     const seen = new Set();
     const recent = [];
-    for (let i = state.expenses.length - 1; i >= 0 && recent.length < 15; i -= 1) {
-      const desc = state.expenses[i].description.trim();
-      const key = desc.toLowerCase();
-      if (desc && !seen.has(key)) {
-        seen.add(key);
-        recent.push(desc);
+    const seenBorrowers = new Set();
+    const recentBorrowers = [];
+
+    for (let i = state.expenses.length - 1; i >= 0; i -= 1) {
+      const exp = state.expenses[i];
+      if (recent.length < 15) {
+        const desc = exp.description.trim();
+        const key = desc.toLowerCase();
+        if (desc && !seen.has(key)) {
+          seen.add(key);
+          recent.push(desc);
+        }
       }
+      if (recentBorrowers.length < 15 && exp.reimbursement && exp.reimbursement.from) {
+        const from = exp.reimbursement.from.trim();
+        const key = from.toLowerCase();
+        if (from && !seenBorrowers.has(key)) {
+          seenBorrowers.add(key);
+          recentBorrowers.push(from);
+        }
+      }
+      if (recent.length >= 15 && recentBorrowers.length >= 15) break;
     }
+
     els.recentDescriptions.innerHTML = '';
     for (const item of recent) {
       const option = document.createElement('option');
       option.value = item;
       els.recentDescriptions.appendChild(option);
+    }
+
+    els.recentBorrowers.innerHTML = '';
+    for (const person of recentBorrowers) {
+      const option = document.createElement('option');
+      option.value = person;
+      els.recentBorrowers.appendChild(option);
     }
   }
 
@@ -533,6 +592,7 @@
       const bucket = byDate.get(cellKey);
       const dayCents = bucket ? bucket.totalCents : 0;
       const itemCount = bucket ? bucket.items.length : 0;
+      const pendingCount = bucket ? bucket.pendingCount : 0;
 
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -542,7 +602,9 @@
       btn.title = `${formatFullDate(cellDate)}: ${formatMoney(dayCents)}`;
       btn.setAttribute(
         'aria-label',
-        `${formatFullDate(cellDate)}: ${formatMoney(dayCents)} (${itemCount} expenses)`
+        `${formatFullDate(cellDate)}: ${formatMoney(dayCents)} (${itemCount} expenses${
+          pendingCount > 0 ? `, ${pendingCount} pending reimbursement` : ''
+        })`
       );
 
       if (isOutside) btn.classList.add('is-outside');
@@ -564,11 +626,25 @@
       num.textContent = String(cellDate.getDate());
       top.appendChild(num);
 
-      if (itemCount > 0) {
-        const countBadge = document.createElement('span');
-        countBadge.className = 'cal-day-dot';
-        countBadge.textContent = `${itemCount}×`;
-        top.appendChild(countBadge);
+      if (itemCount > 0 || pendingCount > 0) {
+        const badgesWrap = document.createElement('span');
+        badgesWrap.className = 'cal-day-badges';
+
+        if (pendingCount > 0) {
+          const pendingDot = document.createElement('span');
+          pendingDot.className = 'cal-day-pending-dot';
+          pendingDot.title = `${pendingCount} pending reimbursement${pendingCount > 1 ? 's' : ''}`;
+          badgesWrap.appendChild(pendingDot);
+        }
+
+        if (itemCount > 0) {
+          const countBadge = document.createElement('span');
+          countBadge.className = 'cal-day-dot';
+          countBadge.textContent = `${itemCount}×`;
+          badgesWrap.appendChild(countBadge);
+        }
+
+        top.appendChild(badgesWrap);
       }
 
       const amt = document.createElement('div');
@@ -609,7 +685,7 @@
     if (items.length > 0) {
       const byMethod = new Map();
       for (const item of items) {
-        byMethod.set(item.method, (byMethod.get(item.method) || 0) + item.cents);
+        byMethod.set(item.method, (byMethod.get(item.method) || 0) + getNetSpendCents(item));
       }
       els.methodBreakdown.innerHTML = '';
       for (const [method, cents] of byMethod.entries()) {
@@ -634,6 +710,9 @@
       if (state.editingId === exp.id) {
         li.appendChild(buildInlineEditForm(exp));
       } else {
+        const reimb = exp.reimbursement;
+        const netCents = getNetSpendCents(exp);
+
         const main = document.createElement('div');
         main.className = 'expense-main';
 
@@ -648,6 +727,20 @@
         badge.className = 'method-badge';
         badge.textContent = exp.method;
         meta.appendChild(badge);
+
+        if (reimb) {
+          const reimbBadge = document.createElement('span');
+          const fromText = reimb.from ? ` · from ${reimb.from}` : '';
+          if (reimb.status === 'paid') {
+            reimbBadge.className = 'reimb-badge-paid';
+            const paidLabel = reimb.paidDate ? ` · ${formatShortDate(parseLocalDateKey(reimb.paidDate))}` : '';
+            reimbBadge.textContent = `reimbursed ${formatMoney(reimb.owedCents)}${fromText}${paidLabel}`;
+          } else {
+            reimbBadge.className = 'reimb-badge-pending';
+            reimbBadge.textContent = `owed ${formatMoney(reimb.owedCents)}${fromText}`;
+          }
+          meta.appendChild(reimbBadge);
+        }
 
         if (exp.createdAt) {
           const time = document.createElement('span');
@@ -664,9 +757,45 @@
         const right = document.createElement('div');
         right.className = 'expense-right';
 
-        const amt = document.createElement('span');
-        amt.className = 'expense-amount';
-        amt.textContent = formatMoney(exp.cents);
+        if (reimb && reimb.status === 'paid' && netCents !== exp.cents) {
+          const amtStack = document.createElement('div');
+          amtStack.className = 'expense-amount-stack';
+
+          const netAmt = document.createElement('span');
+          netAmt.className = 'expense-amount';
+          netAmt.textContent = formatMoney(netCents);
+
+          const grossAmt = document.createElement('span');
+          grossAmt.className = 'expense-amount-gross';
+          grossAmt.title = `Original amount paid: ${formatMoney(exp.cents)}`;
+          grossAmt.textContent = formatMoney(exp.cents);
+
+          amtStack.appendChild(netAmt);
+          amtStack.appendChild(grossAmt);
+          right.appendChild(amtStack);
+        } else {
+          const amt = document.createElement('span');
+          amt.className = 'expense-amount';
+          amt.textContent = formatMoney(netCents);
+          right.appendChild(amt);
+        }
+
+        if (reimb && reimb.status === 'pending') {
+          const settleBtn = document.createElement('button');
+          settleBtn.type = 'button';
+          settleBtn.className = 'btn-settle';
+          settleBtn.textContent = 'mark paid';
+          settleBtn.addEventListener('click', () => markReimbursementPaid(exp.id));
+          right.appendChild(settleBtn);
+        } else if (reimb && reimb.status === 'paid') {
+          const reopenBtn = document.createElement('button');
+          reopenBtn.type = 'button';
+          reopenBtn.className = 'btn-reopen';
+          reopenBtn.textContent = 'unmark';
+          reopenBtn.title = 'Revert reimbursement back to pending';
+          reopenBtn.addEventListener('click', () => reopenReimbursement(exp.id));
+          right.appendChild(reopenBtn);
+        }
 
         const editBtn = document.createElement('button');
         editBtn.type = 'button';
@@ -685,7 +814,6 @@
         delBtn.textContent = '×';
         delBtn.addEventListener('click', () => deleteExpense(exp.id));
 
-        right.appendChild(amt);
         right.appendChild(editBtn);
         right.appendChild(delBtn);
 
@@ -694,6 +822,100 @@
       }
 
       els.expenseList.appendChild(li);
+    }
+  }
+
+  function renderPendingReimbursements() {
+    const pendingItems = state.expenses
+      .filter((exp) => getPendingOwedCents(exp) > 0)
+      .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
+
+    if (pendingItems.length === 0) {
+      els.owedSection.classList.add('hidden');
+      state.owedDrawerOpen = false;
+      els.owedDrawer.classList.add('hidden');
+      els.owedToggleBtn.setAttribute('aria-expanded', 'false');
+      els.owedChevron.textContent = 'view ▾';
+      els.owedList.innerHTML = '';
+      return;
+    }
+
+    let totalOwedCents = 0;
+    for (const item of pendingItems) {
+      totalOwedCents += item.reimbursement.owedCents;
+    }
+
+    els.owedSection.classList.remove('hidden');
+    els.owedCountBadge.textContent = `${pendingItems.length} pending`;
+    els.owedTotalAmount.textContent = formatMoney(totalOwedCents);
+    els.owedDrawer.classList.toggle('hidden', !state.owedDrawerOpen);
+    els.owedToggleBtn.setAttribute('aria-expanded', String(state.owedDrawerOpen));
+    els.owedChevron.textContent = state.owedDrawerOpen ? 'hide ▴' : 'view ▾';
+
+    els.owedList.innerHTML = '';
+    for (const exp of pendingItems) {
+      const li = document.createElement('li');
+      li.className = 'owed-item';
+
+      const main = document.createElement('div');
+      main.className = 'owed-item-main';
+
+      const title = document.createElement('div');
+      title.className = 'owed-item-title';
+      title.textContent = exp.description;
+
+      const meta = document.createElement('div');
+      meta.className = 'owed-item-meta';
+
+      const dateBtn = document.createElement('button');
+      dateBtn.type = 'button';
+      dateBtn.className = 'owed-date-btn';
+      dateBtn.textContent = formatShortDate(parseLocalDateKey(exp.date));
+      dateBtn.title = `Jump to ${exp.date}`;
+      dateBtn.addEventListener('click', () => {
+        selectDate(exp.date, parseLocalDateKey(exp.date));
+      });
+      meta.appendChild(dateBtn);
+
+      const methodBadge = document.createElement('span');
+      methodBadge.className = 'method-badge';
+      methodBadge.textContent = exp.method;
+      meta.appendChild(methodBadge);
+
+      if (exp.reimbursement.from) {
+        const fromSpan = document.createElement('span');
+        fromSpan.textContent = `from ${exp.reimbursement.from}`;
+        meta.appendChild(fromSpan);
+      }
+
+      if (exp.reimbursement.owedCents < exp.cents) {
+        const splitSpan = document.createElement('span');
+        splitSpan.textContent = `split of ${formatMoney(exp.cents)}`;
+        meta.appendChild(splitSpan);
+      }
+
+      main.appendChild(title);
+      main.appendChild(meta);
+
+      const right = document.createElement('div');
+      right.className = 'owed-item-right';
+
+      const amt = document.createElement('span');
+      amt.className = 'owed-item-amount';
+      amt.textContent = formatMoney(exp.reimbursement.owedCents);
+
+      const settleBtn = document.createElement('button');
+      settleBtn.type = 'button';
+      settleBtn.className = 'btn-settle';
+      settleBtn.textContent = 'mark paid';
+      settleBtn.addEventListener('click', () => markReimbursementPaid(exp.id));
+
+      right.appendChild(amt);
+      right.appendChild(settleBtn);
+
+      li.appendChild(main);
+      li.appendChild(right);
+      els.owedList.appendChild(li);
     }
   }
 
@@ -742,14 +964,87 @@
       renderAll();
     });
 
+    // Optional reimbursement controls inside inline edit
+    const reimbRow = document.createElement('div');
+    reimbRow.className = 'expense-edit-reimb-row';
+
+    const reimbCheckLabel = document.createElement('label');
+    const reimbCheck = document.createElement('input');
+    reimbCheck.type = 'checkbox';
+    reimbCheck.checked = Boolean(exp.reimbursement);
+    reimbCheckLabel.appendChild(reimbCheck);
+    reimbCheckLabel.appendChild(document.createTextNode('reimbursable'));
+
+    const owedInput = document.createElement('input');
+    owedInput.type = 'number';
+    owedInput.inputMode = 'decimal';
+    owedInput.step = '0.01';
+    owedInput.min = '0.01';
+    owedInput.placeholder = 'owed ₱';
+    owedInput.value = exp.reimbursement
+      ? (exp.reimbursement.owedCents / 100).toFixed(2)
+      : (exp.cents / 100).toFixed(2);
+
+    const fromInput = document.createElement('input');
+    fromInput.type = 'text';
+    fromInput.maxLength = 40;
+    fromInput.placeholder = 'from who? (optional)';
+    fromInput.value = exp.reimbursement ? exp.reimbursement.from : '';
+
+    const statusSel = document.createElement('select');
+    for (const st of ['pending', 'paid']) {
+      const opt = document.createElement('option');
+      opt.value = st;
+      opt.textContent = st;
+      statusSel.appendChild(opt);
+    }
+    statusSel.value = exp.reimbursement ? exp.reimbursement.status : 'pending';
+
+    const syncEditReimbVisibility = () => {
+      const active = reimbCheck.checked;
+      owedInput.disabled = !active;
+      fromInput.disabled = !active;
+      statusSel.disabled = !active;
+      owedInput.classList.toggle('hidden', !active);
+      fromInput.classList.toggle('hidden', !active);
+      statusSel.classList.toggle('hidden', !active);
+    };
+    reimbCheck.addEventListener('change', syncEditReimbVisibility);
+    syncEditReimbVisibility();
+
+    reimbRow.appendChild(reimbCheckLabel);
+    reimbRow.appendChild(owedInput);
+    reimbRow.appendChild(fromInput);
+    reimbRow.appendChild(statusSel);
+
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       const cents = toCents(amtInput.value);
       const description = descInput.value.trim();
       if (!cents || !description) return;
+
+      let nextReimb = null;
+      if (reimbCheck.checked) {
+        const parsedOwed = toCents(owedInput.value) || cents;
+        const clampedOwed = Math.min(cents, parsedOwed);
+        const status = statusSel.value === 'paid' ? 'paid' : 'pending';
+        nextReimb = {
+          owedCents: clampedOwed,
+          from: fromInput.value.trim().slice(0, 40),
+          status,
+          paidDate:
+            status === 'paid'
+              ? (exp.reimbursement && exp.reimbursement.paidDate) || getTodayKey()
+              : null,
+        };
+      }
+
       exp.cents = cents;
       exp.description = description;
       exp.method = methodSel.value;
+      if (nextReimb) exp.reimbursement = nextReimb;
+      else delete exp.reimbursement;
+
       state.editingId = null;
       persistExpenses();
       renderAll();
@@ -760,15 +1055,107 @@
     form.appendChild(methodSel);
     form.appendChild(saveBtn);
     form.appendChild(cancelBtn);
+    form.appendChild(reimbRow);
     return form;
   }
 
   function renderAll() {
     const byDate = groupExpensesByDate();
     renderSummaryTotals();
+    renderPendingReimbursements();
     renderCalendar(byDate);
     renderSelectedDayLedger(byDate);
     renderRecentDescriptions();
+  }
+
+  // Reimbursement Entry & Settlement Helpers
+  function computeOwedCentsFromForm(totalCents) {
+    if (!state.reimburseEnabled || !totalCents) return null;
+    if (state.reimburseSplit === 'full') return totalCents;
+    if (state.reimburseSplit === 'half') return Math.max(1, Math.round(totalCents / 2));
+    return toCents(els.reimburseCustomInput.value);
+  }
+
+  function renderReimburseControls() {
+    const customActive = state.reimburseEnabled && state.reimburseSplit === 'custom';
+    els.reimburseToggleBtn.setAttribute('aria-pressed', String(state.reimburseEnabled));
+    els.reimburseOptions.classList.toggle('hidden', !state.reimburseEnabled);
+    els.reimburseCustomWrap.classList.toggle('hidden', !customActive);
+    els.reimburseCustomInput.disabled = !customActive;
+    els.reimburseFromInput.disabled = !state.reimburseEnabled;
+    for (const pill of els.splitPills) {
+      pill.classList.toggle('is-active', pill.dataset.split === state.reimburseSplit);
+    }
+    renderReimbursePreview();
+  }
+
+  function renderReimbursePreview() {
+    if (!state.reimburseEnabled) {
+      els.reimbursePreview.textContent = '';
+      return;
+    }
+    const totalCents = toCents(els.amountInput.value);
+    if (!totalCents) {
+      els.reimbursePreview.textContent = state.reimburseSplit === 'half' ? '50% owed back' : '100% owed back';
+      return;
+    }
+    const owedCents = computeOwedCentsFromForm(totalCents);
+    if (!owedCents) {
+      els.reimbursePreview.textContent = 'enter owed ₱';
+      return;
+    }
+    if (owedCents > totalCents) {
+      els.reimbursePreview.textContent = `exceeds ${formatMoney(totalCents)}`;
+      return;
+    }
+    els.reimbursePreview.textContent = `owed back: ${formatMoney(owedCents)}`;
+  }
+
+  function resetReimburseEntry() {
+    state.reimburseEnabled = false;
+    state.reimburseSplit = 'full';
+    els.reimburseCustomInput.value = '';
+    els.reimburseFromInput.value = '';
+    renderReimburseControls();
+  }
+
+  function markReimbursementPaid(id) {
+    const exp = state.expenses.find((item) => item.id === id);
+    if (!exp || !exp.reimbursement || exp.reimbursement.status === 'paid') return;
+
+    const prevStatus = exp.reimbursement.status;
+    const prevPaidDate = exp.reimbursement.paidDate;
+
+    exp.reimbursement.status = 'paid';
+    exp.reimbursement.paidDate = getTodayKey();
+    persistExpenses();
+    triggerBlahajSpin(1400);
+    renderAll();
+
+    showToast(`Marked "${exp.description}" reimbursed (${formatMoney(exp.reimbursement.owedCents)})`, () => {
+      exp.reimbursement.status = prevStatus;
+      exp.reimbursement.paidDate = prevPaidDate;
+      persistExpenses();
+      renderAll();
+    });
+  }
+
+  function reopenReimbursement(id) {
+    const exp = state.expenses.find((item) => item.id === id);
+    if (!exp || !exp.reimbursement || exp.reimbursement.status !== 'paid') return;
+
+    const prevPaidDate = exp.reimbursement.paidDate;
+    exp.reimbursement.status = 'pending';
+    exp.reimbursement.paidDate = null;
+    persistExpenses();
+    renderAll();
+
+    showToast(`Reopened "${exp.description}" as pending`, () => {
+      exp.reimbursement.status = 'paid';
+      exp.reimbursement.paidDate = prevPaidDate;
+      persistExpenses();
+      renderAll();
+    });
   }
 
   // Actions
@@ -810,6 +1197,28 @@
     const dateKey = els.dateInput.value || getTodayKey();
     const method = els.methodSelect.value || DEFAULT_METHODS[0];
 
+    let reimbursement = null;
+    if (state.reimburseEnabled) {
+      const owedCents = computeOwedCentsFromForm(cents);
+      if (!owedCents || owedCents > cents) {
+        setFormError(
+          owedCents && owedCents > cents
+            ? 'Owed amount cannot exceed the total amount paid.'
+            : 'Enter a valid owed amount greater than 0.'
+        );
+        if (state.reimburseSplit === 'custom') {
+          els.reimburseCustomInput.focus();
+        }
+        return;
+      }
+      reimbursement = {
+        owedCents,
+        from: els.reimburseFromInput.value.trim().slice(0, 40),
+        status: 'pending',
+        paidDate: null,
+      };
+    }
+
     const expense = {
       id: createId(),
       cents,
@@ -818,6 +1227,9 @@
       date: dateKey,
       createdAt: Date.now(),
     };
+    if (reimbursement) {
+      expense.reimbursement = reimbursement;
+    }
 
     state.expenses.push(expense);
     state.lastMethod = method;
@@ -831,6 +1243,7 @@
 
     els.amountInput.value = '';
     els.descInput.value = '';
+    resetReimburseEntry();
     els.amountInput.focus();
 
     triggerBlahajSpin(1400);
@@ -881,7 +1294,7 @@
     }
     if (!date || !description || !cents) return null;
 
-    return {
+    const cleanExpense = {
       id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : createId(),
       cents,
       description,
@@ -889,6 +1302,34 @@
       date,
       createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now(),
     };
+
+    if (raw.reimbursement && typeof raw.reimbursement === 'object') {
+      const r = raw.reimbursement;
+      let owedCents = null;
+      if (Number.isInteger(r.owedCents) && r.owedCents > 0) {
+        owedCents = Math.min(cents, r.owedCents);
+      } else if (r.owedAmount !== undefined) {
+        const parsedOwed = toCents(r.owedAmount);
+        if (parsedOwed) owedCents = Math.min(cents, parsedOwed);
+      }
+      if (owedCents) {
+        const status = r.status === 'paid' ? 'paid' : 'pending';
+        const paidDate =
+          status === 'paid' && typeof r.paidDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.paidDate)
+            ? r.paidDate
+            : status === 'paid'
+              ? date
+              : null;
+        cleanExpense.reimbursement = {
+          owedCents,
+          from: typeof r.from === 'string' ? r.from.trim().slice(0, 40) : '',
+          status,
+          paidDate,
+        };
+      }
+    }
+
+    return cleanExpense;
   }
 
   function parseBackupPayload(data) {
@@ -1019,13 +1460,31 @@
     }
     const sorted = [...state.expenses].sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
     const rows = [
-      ['Date', 'Description', 'Payment Method', 'Amount (PHP)'],
-      ...sorted.map((exp) => [
-        exp.date,
-        exp.description,
-        exp.method,
-        (exp.cents / 100).toFixed(2),
-      ]),
+      [
+        'Date',
+        'Description',
+        'Payment Method',
+        'Amount Paid (PHP)',
+        'Net Spend (PHP)',
+        'Reimbursement Status',
+        'Owed (PHP)',
+        'From',
+        'Paid Date',
+      ],
+      ...sorted.map((exp) => {
+        const r = exp.reimbursement;
+        return [
+          exp.date,
+          exp.description,
+          exp.method,
+          (exp.cents / 100).toFixed(2),
+          (getNetSpendCents(exp) / 100).toFixed(2),
+          r ? r.status : '',
+          r ? (r.owedCents / 100).toFixed(2) : '',
+          r ? r.from : '',
+          r && r.paidDate ? r.paidDate : '',
+        ];
+      }),
     ];
     const csv = rows.map((r) => r.map(escapeCsvCell).join(',')).join('\r\n');
     triggerDownload(`quickspend-expenses-${getTodayKey()}.csv`, csv, 'text/csv;charset=utf-8;');
@@ -1054,6 +1513,32 @@
     }
 
     els.expenseForm.addEventListener('submit', addExpense);
+
+    els.reimburseToggleBtn.addEventListener('click', () => {
+      state.reimburseEnabled = !state.reimburseEnabled;
+      renderReimburseControls();
+      if (state.reimburseEnabled && state.reimburseSplit === 'custom') {
+        els.reimburseCustomInput.focus();
+      }
+    });
+
+    for (const pill of els.splitPills) {
+      pill.addEventListener('click', () => {
+        state.reimburseSplit = pill.dataset.split || 'full';
+        renderReimburseControls();
+        if (state.reimburseSplit === 'custom') {
+          els.reimburseCustomInput.focus();
+        }
+      });
+    }
+
+    els.amountInput.addEventListener('input', renderReimbursePreview);
+    els.reimburseCustomInput.addEventListener('input', renderReimbursePreview);
+
+    els.owedToggleBtn.addEventListener('click', () => {
+      state.owedDrawerOpen = !state.owedDrawerOpen;
+      renderPendingReimbursements();
+    });
 
     els.methodSelect.addEventListener('change', () => {
       const val = els.methodSelect.value;
@@ -1129,6 +1614,7 @@
   applyTheme(state.themeMode);
   els.dateInput.value = state.selectedDateKey;
   renderMethodOptions(state.lastMethod);
+  renderReimburseControls();
   initEvents();
   renderAll();
 })();
